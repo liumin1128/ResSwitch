@@ -7,6 +7,8 @@ enum VirtualDisplayError: LocalizedError {
     case createFailed
     case applyFailed
     case notOnline(String)
+    case lastDisplay
+    case terminating
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +20,10 @@ enum VirtualDisplayError: LocalizedError {
             return "虚拟显示器初始化失败"
         case .notOnline(let message):
             return "虚拟显示器未能上线：\(message)"
+        case .lastDisplay:
+            return "这是当前唯一的显示器"
+        case .terminating:
+            return "正在退出 ResSwitch"
         }
     }
 
@@ -29,6 +35,10 @@ enum VirtualDisplayError: LocalizedError {
             return "请完全退出 App 后重试；如果仍然失败，请重启 Mac 再试。虚拟显示器依赖 macOS 私有接口，系统更新后可能失效。"
         case .notOnline:
             return "请稍后重试。若系统显示设置无响应，请先重启 Mac，不要连续反复切换。"
+        case .lastDisplay:
+            return "关闭后这台 Mac 将没有任何画面。请先连接物理显示器，或确认远程工具能自行创建虚拟屏；如果仍要关闭，请在确认对话框中再次确认。"
+        case .terminating:
+            return "请等待退出完成。"
         }
     }
 }
@@ -51,14 +61,26 @@ final class VirtualDisplayController {
         didSet { stateDidChange?() }
     }
 
+    /// Set while `applicationShouldTerminate` is waiting for displays to settle.
+    /// New switching requests are rejected so the quit path cannot be raced by
+    /// a preset click, and the menu can show a distinct "quitting" state.
+    private(set) var isTerminating = false {
+        didSet { stateDidChange?() }
+    }
+
     /// Called on the main thread whenever the UI-visible state changes.
     var stateDidChange: (() -> Void)?
 
     private var display: CGVirtualDisplay?
+    /// The display being created by an in-flight switch, before it becomes the
+    /// active one. Needed so a quit during the 2.5 s settle window can still
+    /// detect that the new display is the only screen.
+    private var provisioningDisplayID: CGDirectDisplayID?
     private var bornAt: Date?
     private var pending: [(display: CGVirtualDisplay, bornAt: Date)] = []
     private var reconfigurationWorkItem: DispatchWorkItem?
     private var staleConfirmationWorkItem: DispatchWorkItem?
+    private var terminationCompletion: (() -> Void)?
     private let minimumLifetime: TimeInterval = 2.5
 
     private init() {
@@ -78,6 +100,7 @@ final class VirtualDisplayController {
     // MARK: - State
 
     var statusTitle: String {
+        if isTerminating { return "正在退出 ResSwitch…" }
         if isBusy { return "正在切换虚拟显示器…" }
         if let preset = activePreset {
             return "虚拟屏：\(preset.name) · \(preset.pixelLabel)"
@@ -86,20 +109,53 @@ final class VirtualDisplayController {
     }
 
     var statusDetail: String {
+        if isTerminating { return "正在释放虚拟显示器并退出" }
         if isBusy { return "请稍候，切换期间画面可能会短暂闪烁" }
         if let preset = activePreset {
-            return preset.detailLabel(for: activeScaleMode ?? scaleMode)
+            let detail = preset.detailLabel(for: activeScaleMode ?? scaleMode)
+            return (isSoleOnlineDisplay && hasOnlineDisplay) ? "\(detail) · 当前唯一屏幕" : detail
         }
         return "默认 \(Preset.default.pixelLabel) · 当前渲染：\(scaleMode.shortTitle)"
     }
 
+    /// True when every display that is currently online belongs to ResSwitch.
+    ///
+    /// Releasing our displays would then leave the Mac with no screen at all,
+    /// and a headless machine has no GUI left to recreate one. Close/quit
+    /// therefore require an explicit confirmation, and the stale-display check
+    /// must never retire the last display on its own. The active display, an
+    /// in-flight replacement, and retired displays still inside their minimum
+    /// lifetime are all considered, because any of them may be online. Returns
+    /// `true` when the online list cannot be read (empty), which is the
+    /// conservative choice: we would rather ask for confirmation than silently
+    /// remove the only screen.
+    var isSoleOnlineDisplay: Bool {
+        var owned = [displayID, provisioningDisplayID].compactMap { $0 }
+        // Displays retired during a switch stay online until their minimum
+        // lifetime expires; they are still ours and quitting would drop them.
+        owned += pending.map { $0.display.displayID }
+        guard !owned.isEmpty else { return false }
+        return DisplayInfo.onlineIDs().allSatisfy { owned.contains($0) }
+    }
+
+    /// True when at least one display is online, so a confirmation dialog has
+    /// somewhere to appear. When false there is no screen left to protect and
+    /// no way to show an alert; a modal there would block termination forever.
+    var hasOnlineDisplay: Bool {
+        if let id = displayID, CGDisplayIsOnline(id) != 0 { return true }
+        if let id = provisioningDisplayID, CGDisplayIsOnline(id) != 0 { return true }
+        if pending.contains(where: { CGDisplayIsOnline($0.display.displayID) != 0 }) { return true }
+        return !DisplayInfo.onlineIDs().isEmpty
+    }
+
     var canClose: Bool {
-        activePreset != nil && !isBusy
+        activePreset != nil && !isBusy && !isTerminating
     }
 
     /// Re-check that the display we think we own is still present. Called when
     /// the menu opens and after macOS reconfigures displays.
     func refreshState() {
+        guard !isTerminating else { return }
         guard !isBusy, let id = displayID, activePreset != nil else { return }
         guard !isDisplayOnline(id) else { return }
 
@@ -108,10 +164,19 @@ final class VirtualDisplayController {
         staleConfirmationWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self,
+                  !self.isTerminating,
                   !self.isBusy,
                   self.displayID == id,
                   let preset = self.activePreset,
                   !self.isDisplayOnline(id) else {
+                return
+            }
+
+            // Never destroy the only remaining screen. If the display is
+            // really gone there is nothing left to show anyway; keeping the
+            // object alive is recoverable, releasing it is not.
+            guard !self.isSoleOnlineDisplay else {
+                NSLog("ResSwitch: display #\(id) is offline but is the only online display; keeping it")
                 return
             }
 
@@ -141,6 +206,10 @@ final class VirtualDisplayController {
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
 
+        guard !isTerminating else {
+            completion(.failure(VirtualDisplayError.terminating))
+            return
+        }
         guard !isBusy else {
             completion(.failure(VirtualDisplayError.busy))
             return
@@ -165,19 +234,22 @@ final class VirtualDisplayController {
         do {
             created = try makeDisplay(preset, mode: mode)
         } catch {
+            provisioningDisplayID = nil
             isBusy = false
             completion(.failure(error))
             return
         }
+        provisioningDisplayID = created.id
 
         waitForOnline(
             created.id,
             preset: preset,
-            deadline: Date().addingTimeInterval(5.0)
+            deadline: DispatchTime.now() + 5.0
         ) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
+                self.provisioningDisplayID = nil
                 self.retire(created.display, bornAt: created.bornAt)
                 self.isBusy = false
                 completion(.failure(error))
@@ -203,6 +275,10 @@ final class VirtualDisplayController {
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
 
+        guard !isTerminating else {
+            completion(.failure(VirtualDisplayError.terminating))
+            return
+        }
         guard !isBusy else {
             completion(.failure(VirtualDisplayError.busy))
             return
@@ -223,18 +299,35 @@ final class VirtualDisplayController {
         }
     }
 
-    func disable(completion: @escaping (Result<Void, Error>) -> Void) {
+    func disable(
+        allowingSoleDisplay: Bool = false,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         dispatchPrecondition(condition: .onQueue(.main))
 
+        guard !isTerminating else {
+            completion(.failure(VirtualDisplayError.terminating))
+            return
+        }
         guard !isBusy else {
             completion(.failure(VirtualDisplayError.busy))
             return
         }
         guard let oldDisplay = display else {
+            provisioningDisplayID = nil
             activePreset = nil
             activeScaleMode = nil
             displayID = nil
             completion(.success(()))
+            return
+        }
+        // Callers that destroy the last screen must opt in explicitly; the UI
+        // asks the user first. A race between the check and this call still
+        // fails closed instead of silently removing the only display. When no
+        // display is online at all there is nothing left to protect, so the
+        // release is allowed even without the explicit opt-in.
+        guard allowingSoleDisplay || !isSoleOnlineDisplay || !hasOnlineDisplay else {
+            completion(.failure(VirtualDisplayError.lastDisplay))
             return
         }
 
@@ -255,30 +348,72 @@ final class VirtualDisplayController {
         }
     }
 
-    /// Called from applicationShouldTerminate. Gives a freshly-created display
-    /// enough time to settle before the process releases it.
-    func prepareForTermination(completion: @escaping () -> Void) {
+    /// Called from applicationShouldTerminate. Gives the active display and any
+    /// retired-but-not-yet-released display enough time to settle, so the
+    /// process does not release a fresh display too early. The wait is bounded:
+    /// a wedged WindowServer must never prevent the app from quitting.
+    func prepareForTermination(
+        timeout: TimeInterval = 8.0,
+        completion: @escaping () -> Void
+    ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        guard terminationCompletion == nil else { return }
+        terminationCompletion = completion
+        isTerminating = true
+        staleConfirmationWorkItem?.cancel()
+        reconfigurationWorkItem?.cancel()
+
+        let deadline = DispatchTime.now() + max(0.5, timeout)
+        waitForIdleBeforeTermination(deadline: deadline)
+    }
+
+    private func waitForIdleBeforeTermination(deadline: DispatchTime) {
+        guard terminationCompletion != nil else { return }
+
         if isBusy {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.prepareForTermination(completion: completion)
+            guard DispatchTime.now() < deadline else {
+                NSLog("ResSwitch: termination deadline reached while busy; forcing cleanup")
+                finishTermination()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForIdleBeforeTermination(deadline: deadline)
             }
             return
         }
 
-        guard let birth = bornAt, display != nil else {
-            completion()
-            return
+        // Also wait for displays that were retired but are still inside their
+        // minimum lifetime. Dropping those immediately on quit is exactly the
+        // early-release hazard the minimum lifetime exists to prevent.
+        let births = [bornAt].compactMap { $0 } + pending.map { $0.bornAt }
+        let wait = min(3.0, births.map { remainingLifetime(for: $0) }.max() ?? 0)
+        if wait > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                self?.finishTermination()
+            }
+        } else {
+            finishTermination()
         }
+    }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + remainingLifetime(for: birth)) { [weak self] in
-            self?.display = nil
-            self?.displayID = nil
-            self?.activePreset = nil
-            self?.activeScaleMode = nil
-            self?.bornAt = nil
-            self?.pending.removeAll()
-            completion()
-        }
+    private func finishTermination() {
+        guard terminationCompletion != nil else { return }
+
+        let pendingCount = pending.count
+        display = nil
+        provisioningDisplayID = nil
+        displayID = nil
+        activePreset = nil
+        activeScaleMode = nil
+        bornAt = nil
+        pending.removeAll()
+        isBusy = false
+
+        NSLog("ResSwitch: termination cleanup released \(pendingCount) pending display(s)")
+        let completion = terminationCompletion
+        terminationCompletion = nil
+        completion?()
     }
 
     // MARK: - Creation
@@ -352,6 +487,7 @@ final class VirtualDisplayController {
             guard let self else { return }
 
             guard self.isDisplayOnline(newID) else {
+                self.provisioningDisplayID = nil
                 self.retire(newDisplay, bornAt: newBirth)
                 self.isBusy = false
                 completion(
@@ -364,6 +500,7 @@ final class VirtualDisplayController {
                 return
             }
 
+            self.provisioningDisplayID = nil
             self.display = newDisplay
             self.displayID = newID
             self.activePreset = preset
@@ -381,7 +518,7 @@ final class VirtualDisplayController {
     private func waitForOnline(
         _ id: CGDirectDisplayID,
         preset: Preset,
-        deadline: Date,
+        deadline: DispatchTime,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         if isDisplayOnline(id) {
@@ -389,7 +526,7 @@ final class VirtualDisplayController {
             return
         }
 
-        if Date() >= deadline {
+        if DispatchTime.now() >= deadline {
             completion(
                 .failure(
                     VirtualDisplayError.notOnline(
@@ -422,8 +559,12 @@ final class VirtualDisplayController {
 
     // MARK: - Lifetime helpers
 
+    /// Wall-clock based for now, but clamped to `minimumLifetime`: a backwards
+    /// system-clock step must never turn a 2.5 s settle window into hours of
+    /// "switching" state or a quit that never completes.
     private func remainingLifetime(for birth: Date) -> TimeInterval {
-        max(0, minimumLifetime - Date().timeIntervalSince(birth))
+        let elapsed = Date().timeIntervalSince(birth)
+        return min(minimumLifetime, max(0, minimumLifetime - elapsed))
     }
 
     private func retire(_ display: CGVirtualDisplay, bornAt: Date) {

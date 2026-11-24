@@ -11,28 +11,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pointPerfectItem: NSMenuItem!
     private var hiDPIItem: NSMenuItem!
     private var closeMenuItem: NSMenuItem!
-    private var didPrepareToTerminate = false
+    private var quitItem: NSMenuItem!
+
+    private enum TerminationPhase {
+        case idle
+        case preparing
+        case replied
+    }
+
+    private var terminationPhase: TerminationPhase = .idle
+    private var soleDisplayWarningConfirmed = false
+    private var isShowingSoleDisplayWarning = false
+    private var systemIsPoweringOff = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         controller.stateDidChange = { [weak self] in
             self?.refreshMenu()
         }
+        // Logout/shutdown must not be blocked by the sole-display warning.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillPowerOff(_:)),
+            name: NSWorkspace.willPowerOffNotification,
+            object: nil
+        )
         setupStatusItem()
         refreshMenu()
     }
 
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func systemWillPowerOff(_ notification: Notification) {
+        systemIsPoweringOff = true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if didPrepareToTerminate {
+        switch terminationPhase {
+        case .replied:
             return .terminateNow
-        }
-        didPrepareToTerminate = true
-        controller.prepareForTermination {
-            DispatchQueue.main.async {
-                sender.reply(toApplicationShouldTerminate: true)
+
+        case .preparing:
+            // The first request is still waiting for displays to settle. Keep
+            // deferring instead of returning .terminateNow, which would release
+            // a display younger than the minimum lifetime.
+            return .terminateLater
+
+        case .idle:
+            if !systemIsPoweringOff,
+               !soleDisplayWarningConfirmed,
+               controller.isSoleOnlineDisplay,
+               controller.hasOnlineDisplay {
+                guard confirmSoleDisplayTermination() else {
+                    return .terminateCancel
+                }
+                soleDisplayWarningConfirmed = true
             }
+
+            terminationPhase = .preparing
+            // Logout/shutdown should not wait as long as an explicit quit.
+            let timeout: TimeInterval = systemIsPoweringOff ? 3.0 : 8.0
+            controller.prepareForTermination(timeout: timeout) { [weak self] in
+                guard let self else { return }
+                self.terminationPhase = .replied
+                DispatchQueue.main.async {
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+            }
+            return .terminateLater
         }
-        return .terminateLater
     }
 
     // MARK: - Status item
@@ -140,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         aboutItem.target = self
         menu.addItem(aboutItem)
 
-        let quitItem = NSMenuItem(
+        quitItem = NSMenuItem(
             title: "退出 ResSwitch",
             action: #selector(quit),
             keyEquivalent: "q"
@@ -163,9 +212,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshMenu() {
-        guard statusItem != nil else { return }
+        guard statusItem != nil, quitItem != nil else { return }
 
-        let busy = controller.isBusy
+        let locked = controller.isBusy || controller.isTerminating
+        let soleDisplay = controller.isSoleOnlineDisplay && controller.hasOnlineDisplay
         setInfo(
             statusMenuItem,
             controller.statusTitle,
@@ -182,23 +232,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for preset in Preset.all {
             guard let item = presetItems[preset.id] else { continue }
             item.state = (controller.activePreset?.id == preset.id) ? .on : .off
-            item.isEnabled = !busy
+            item.isEnabled = !locked
         }
 
         scaleMenuItem.title = "缩放：\(controller.scaleMode.shortTitle)"
         pointPerfectItem.state = (controller.scaleMode == .pointPerfect) ? .on : .off
         hiDPIItem.state = (controller.scaleMode == .hiDPI) ? .on : .off
-        pointPerfectItem.isEnabled = !busy
-        hiDPIItem.isEnabled = !busy
+        pointPerfectItem.isEnabled = !locked
+        hiDPIItem.isEnabled = !locked
 
         closeMenuItem.isEnabled = controller.canClose
+        closeMenuItem.title = soleDisplay ? "关闭虚拟显示器（唯一屏幕）" : "关闭虚拟显示器"
+        quitItem.title = soleDisplay ? "退出 ResSwitch（唯一屏幕）" : "退出 ResSwitch"
 
         if let button = statusItem.button {
-            button.appearsDisabled = busy
+            button.appearsDisabled = locked
             let tooltip: String
             if let preset = controller.activePreset {
                 let detail = preset.detailLabel(for: controller.activeScaleMode ?? controller.scaleMode)
-                tooltip = "ResSwitch\n\(preset.name) · \(detail)"
+                tooltip = soleDisplay
+                    ? "ResSwitch\n\(preset.name) · \(detail)\n当前唯一屏幕：关闭或退出前会二次确认"
+                    : "ResSwitch\n\(preset.name) · \(detail)"
             } else {
                 tooltip = "ResSwitch\n虚拟显示器未启用"
             }
@@ -254,11 +308,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func closeVirtualDisplay() {
-        controller.disable { [weak self] result in
+        requestClose(allowingSoleDisplay: false)
+    }
+
+    private func requestClose(allowingSoleDisplay: Bool) {
+        if !allowingSoleDisplay, controller.isSoleOnlineDisplay, controller.hasOnlineDisplay {
+            guard confirmSoleDisplayClose() else { return }
+            requestClose(allowingSoleDisplay: true)
+            return
+        }
+
+        controller.disable(allowingSoleDisplay: allowingSoleDisplay) { [weak self] result in
+            guard let self else { return }
             if case .failure(let error) = result {
-                self?.present(error: error)
+                if let vdError = error as? VirtualDisplayError {
+                    switch vdError {
+                    case .lastDisplay:
+                        // State changed between the check and the call; ask
+                        // again instead of silently closing the last screen.
+                        self.requestClose(allowingSoleDisplay: false)
+                    case .busy, .terminating:
+                        break
+                    default:
+                        self.present(error: error)
+                    }
+                } else {
+                    self.present(error: error)
+                }
             }
         }
+    }
+
+    private func confirmSoleDisplayClose() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "这是当前唯一的显示器"
+        alert.informativeText = """
+        关闭后，这台 Mac 将没有任何可用的屏幕，远程画面可能立即中断，而且无法在画面里重新打开。
+
+        如果旁边没有物理显示器，请先接上物理屏，或确认远程工具能自行创建虚拟屏。
+        """
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "仍要关闭")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func confirmSoleDisplayTermination() -> Bool {
+        if isShowingSoleDisplayWarning { return false }
+        isShowingSoleDisplayWarning = true
+        defer { isShowingSoleDisplayWarning = false }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "这是当前唯一的显示器"
+        alert.informativeText = """
+        退出 ResSwitch 后，这台 Mac 将失去唯一的虚拟屏，远程画面可能立即中断，而且无法在画面里重新打开。
+
+        如果旁边没有物理显示器，请先接上物理屏，或确认远程工具能自行创建虚拟屏。
+        """
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "仍要退出")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     @objc private func openDisplaySettings() {
@@ -312,6 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        // An explicit Quit (menu or Cmd+Q) is not a system logout. Clear a
+        // stale power-off flag so the sole-display warning still appears if a
+        // previous logout was cancelled.
+        systemIsPoweringOff = false
         NSApp.terminate(nil)
     }
 

@@ -98,7 +98,7 @@ private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
                 print("… 等待释放")
             }
             let release = {
-                controller.disable { disableResult in
+                controller.disable(allowingSoleDisplay: true) { disableResult in
                     switch disableResult {
                     case .success:
                         print("✅ 虚拟屏已释放")
@@ -119,7 +119,7 @@ private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
             if let suggestion = (error as? LocalizedError)?.recoverySuggestion {
                 print("   \(suggestion)")
             }
-            controller.disable { _ in
+            controller.disable(allowingSoleDisplay: true) { _ in
                 finished = true
             }
         }
@@ -184,7 +184,7 @@ private func runSwitchTest() -> Never {
 
     print("== 关闭虚拟显示器")
     var finished = false
-    controller.disable { result in
+    controller.disable(allowingSoleDisplay: true) { result in
         if case .failure(let error) = result {
             print("❌ 关闭失败：\(error.localizedDescription)")
             allOK = false
