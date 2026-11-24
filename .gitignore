@@ -1,0 +1,11 @@
+# SwiftPM build products
+.build/
+
+# Local build output / packaged app
+dist/
+
+# Generated icon intermediates (AppIcon.icns is committed)
+Resources/AppIcon.iconset/
+
+# macOS
+.DS_Store
