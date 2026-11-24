@@ -110,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for preset in Preset.all {
             let item = NSMenuItem(
-                title: preset.name,
+                title: preset.menuTitle,
                 action: #selector(selectPreset(_:)),
                 keyEquivalent: ""
             )

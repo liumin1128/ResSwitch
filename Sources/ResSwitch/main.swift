@@ -22,7 +22,7 @@ if arguments.contains("--help") || arguments.contains("-h") {
           ResSwitch --selftest-switch  Switch iPad → 4K, then release
           ResSwitch --version          Print version
 
-        Presets: 1080p, 2k, 4k, ipad, mbp16, 3440
+        Presets: 1080p, 2k, 4k, 5k, ipad, mbp16, 3440
         """
     )
     exit(0)
@@ -72,7 +72,7 @@ application.run()
 
 private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
     guard let preset = Preset.preset(id: presetID) else {
-        print("❌ Unknown preset: \(presetID) (use 1080p, 2k, 4k, ipad, mbp16, or 3440)")
+        print("❌ Unknown preset: \(presetID) (use 1080p, 2k, 4k, 5k, ipad, mbp16, or 3440)")
         exit(2)
     }
 
