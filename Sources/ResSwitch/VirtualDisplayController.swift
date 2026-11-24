@@ -6,44 +6,44 @@ enum VirtualDisplayError: LocalizedError {
     case busy
     case createFailed
     case applyFailed
-    case notOnline(String)
-    case modeNotApplied(String)
+    case notOnline
+    case modeNotApplied
     case lastDisplay
     case terminating
 
     var errorDescription: String? {
         switch self {
         case .busy:
-            return "正在切换虚拟显示器"
+            return "Switch in progress"
         case .createFailed:
-            return "无法创建虚拟显示器"
+            return "Couldn't create the virtual display"
         case .applyFailed:
-            return "虚拟显示器初始化失败"
-        case .notOnline(let message):
-            return "虚拟显示器未能上线：\(message)"
-        case .modeNotApplied(let message):
-            return "虚拟显示器分辨率未生效：\(message)"
+            return "Couldn't configure the virtual display"
+        case .notOnline:
+            return "Virtual display didn't come online"
+        case .modeNotApplied:
+            return "Resolution didn't apply"
         case .lastDisplay:
-            return "这是当前唯一的显示器"
+            return "This is the only display"
         case .terminating:
-            return "正在退出 ResSwitch"
+            return "ResSwitch is quitting"
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
         case .busy:
-            return "请等待当前切换完成后再试。"
+            return "Wait for it to finish."
         case .createFailed, .applyFailed:
-            return "请完全退出 App 后重试；如果仍然失败，请重启 Mac 再试。虚拟显示器依赖 macOS 私有接口，系统更新后可能失效。"
+            return "Quit and reopen ResSwitch. Restart the Mac if it still fails."
         case .notOnline:
-            return "请稍后重试。若系统显示设置无响应，请先重启 Mac，不要连续反复切换。"
+            return "Try again. Restart the Mac if it keeps failing."
         case .modeNotApplied:
-            return "虚拟屏已经上线，但 macOS 没有接受目标分辨率。如果同时开着 UU 远程、投屏或其他虚拟屏工具，请把它们的画质/分辨率也设为相同数值再重试；不要连续反复切换。"
+            return "Set any screen-sharing or virtual display app to the same resolution, then try again."
         case .lastDisplay:
-            return "关闭后这台 Mac 将没有任何画面。请先连接物理显示器，或确认远程工具能自行创建虚拟屏；如果仍要关闭，请在确认对话框中再次确认。"
+            return "Connect a display first."
         case .terminating:
-            return "请等待退出完成。"
+            return "Wait for it to finish."
         }
     }
 }
@@ -95,7 +95,7 @@ final class VirtualDisplayController {
         } else {
             // Native-like default: 2x "looks like" sizes for the presets that
             // support it (4K looks like 1920×1080 while still outputting
-            // 3840×2160 pixels). 1080p/2K/超宽屏 declare supportsHiDPI=false
+            // 3840×2160 pixels). 1080p/2K/Ultrawide declare supportsHiDPI=false
             // and are unaffected.
             scaleMode = .hiDPI
         }
@@ -109,22 +109,12 @@ final class VirtualDisplayController {
     // MARK: - State
 
     var statusTitle: String {
-        if isTerminating { return "正在退出 ResSwitch…" }
-        if isBusy { return "正在切换虚拟显示器…" }
+        if isTerminating { return "Quitting…" }
+        if isBusy { return "Switching…" }
         if let preset = activePreset {
-            return "虚拟屏：\(preset.name) · \(preset.pixelLabel)"
+            return "On · \(preset.pixelLabel)"
         }
-        return "虚拟屏：未启用"
-    }
-
-    var statusDetail: String {
-        if isTerminating { return "正在释放虚拟显示器并退出" }
-        if isBusy { return "请稍候，切换期间画面可能会短暂闪烁" }
-        if let preset = activePreset {
-            let detail = preset.detailLabel(for: activeScaleMode ?? scaleMode)
-            return (isSoleOnlineDisplay && hasOnlineDisplay) ? "\(detail) · 当前唯一屏幕" : detail
-        }
-        return "默认 \(Preset.default.pixelLabel) · 当前渲染：\(scaleMode.shortTitle)"
+        return "No virtual display"
     }
 
     /// True when every display that is currently online belongs to ResSwitch.
@@ -524,11 +514,8 @@ final class VirtualDisplayController {
                 if modeAttempts < 3, DispatchTime.now() < deadline {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: enforceMode)
                 } else {
-                    fail(
-                        .modeNotApplied(
-                            "\(preset.pixelLabel) 没有生效（当前 \(self.currentModeLabel(id))）"
-                        )
-                    )
+                    NSLog("ResSwitch: display #\(id) mode not applied (current \(self.currentModeLabel(id)))")
+                    fail(.modeNotApplied)
                 }
             }
         }
@@ -548,11 +535,8 @@ final class VirtualDisplayController {
             }
 
             if DispatchTime.now() >= deadline {
-                fail(
-                    .notOnline(
-                        "\(preset.pixelLabel) 一直没有上线（当前 \(currentModeLabel(id))）"
-                    )
-                )
+                NSLog("ResSwitch: display #\(id) never came online (current \(currentModeLabel(id)))")
+                fail(.notOnline)
                 return
             }
 
@@ -618,8 +602,8 @@ final class VirtualDisplayController {
         if let mode = DisplayInfo.currentMode(id) {
             return "\(mode.width)×\(mode.height)pt / \(mode.pixelWidth)×\(mode.pixelHeight)px"
         }
-        return "未知（online=\(CGDisplayIsOnline(id))，" +
-            "\(CGDisplayPixelsWide(id))×\(CGDisplayPixelsHigh(id))px）"
+        return "unknown (online=\(CGDisplayIsOnline(id)), " +
+            "\(CGDisplayPixelsWide(id))×\(CGDisplayPixelsHigh(id))px)"
     }
 
     // MARK: - Lifetime helpers
