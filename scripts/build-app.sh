@@ -6,21 +6,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 APP_NAME="ResSwitch"
-VERSION="1.0.6"
+VERSION="1.0.7"
 APP="$ROOT/dist/$APP_NAME.app"
 ZIP="$ROOT/dist/$APP_NAME-$VERSION.zip"
 
-echo "== 构建 release 可执行文件"
+echo "== Building release executable"
 swift build -c release --product "$APP_NAME"
 
 if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
-    echo "== 生成图标"
+    echo "== Generating icon"
     rm -rf "$ROOT/Resources/AppIcon.iconset"
     swift "$ROOT/scripts/make-icon.swift" "$ROOT/Resources/AppIcon.iconset"
     iconutil -c icns "$ROOT/Resources/AppIcon.iconset" -o "$ROOT/Resources/AppIcon.icns"
 fi
 
-echo "== 组装 App Bundle"
+echo "== Assembling app bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
@@ -29,11 +29,11 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
-echo "== ad-hoc 签名"
+echo "== Ad-hoc signing"
 codesign --force --deep --sign - --timestamp=none "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-echo "== 打包 zip"
+echo "== Creating zip"
 rm -f "$ZIP"
 ditto -c -k --norsrc --noextattr --keepParent "$APP" "$ZIP"
 
@@ -41,5 +41,5 @@ echo ""
 echo "✅ $APP"
 echo "✅ $ZIP"
 echo ""
-echo "运行：open \"$APP\""
-echo "自检：\"$APP/Contents/MacOS/$APP_NAME\" --selftest ipad"
+echo "Run: open \"$APP\""
+echo "Self-test: \"$APP/Contents/MacOS/$APP_NAME\" --selftest ipad"

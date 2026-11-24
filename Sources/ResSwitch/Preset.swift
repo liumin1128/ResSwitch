@@ -15,15 +15,8 @@ enum ScaleMode: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .pointPerfect: return "点对点 1×（1:1，UI 更小）"
-        case .hiDPI: return "原生 2×（4K / iPad / MBP 16）"
-        }
-    }
-
-    var shortTitle: String {
-        switch self {
-        case .pointPerfect: return "点对点 1×"
-        case .hiDPI: return "原生 2×"
+        case .pointPerfect: return "1×"
+        case .hiDPI: return "2×"
         }
     }
 }
@@ -38,7 +31,7 @@ struct Preset: Identifiable, Hashable {
     let name: String
     let width: Int
     let height: Int
-    /// Whether this preset uses 2x when the user selects "原生 2×".
+    /// Whether this preset uses 2x when the user selects "2×".
     let supportsHiDPI: Bool
     /// Real-world density for the HiDPI mode, used so macOS picks the intended
     /// default mode. Point-perfect mode always declares a large 1x panel.
@@ -71,18 +64,6 @@ struct Preset: Identifiable, Hashable {
     }
 
     var pixelLabel: String { "\(width)×\(height)" }
-
-    var menuTitle: String { "\(name)  ·  \(pixelLabel)" }
-
-    func detailLabel(for mode: ScaleMode) -> String {
-        if usesHiDPI(for: mode) {
-            return "\(pixelLabel) · 逻辑 \(logicalWidth(for: mode))×\(logicalHeight(for: mode)) · 原生 2× · 可调大小"
-        }
-        if mode == .pointPerfect {
-            return "\(pixelLabel) · 点对点 1×"
-        }
-        return "\(pixelLabel) · 标准 1×"
-    }
 
     var displayName: String { "ResSwitch · \(name)" }
 
@@ -147,7 +128,7 @@ struct Preset: Identifiable, Hashable {
         // MacBook Pro 16" 2021 (M1 Pro/Max); 2x mode looks like 1728×1117
         Preset(id: "mbp16", name: "MacBook Pro 16″", width: 3456, height: 2234, supportsHiDPI: true, hiDPIPixelsPerInch: 254),
         // 34" 3440×1440, 1x
-        Preset(id: "3440", name: "超宽屏", width: 3440, height: 1440, supportsHiDPI: false, hiDPIPixelsPerInch: 110)
+        Preset(id: "3440", name: "Ultrawide", width: 3440, height: 1440, supportsHiDPI: false, hiDPIPixelsPerInch: 110)
     ]
 
     static let `default` = all[0]

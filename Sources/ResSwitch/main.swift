@@ -4,32 +4,32 @@ import Foundation
 private let arguments = CommandLine.arguments
 
 if arguments.contains("--version") {
-    print("ResSwitch 1.0.6")
+    print("ResSwitch 1.0.7")
     exit(0)
 }
 
 if arguments.contains("--help") || arguments.contains("-h") {
     print(
         """
-        ResSwitch — macOS 菜单栏虚拟显示器分辨率切换工具
+        ResSwitch — virtual display switcher for macOS
 
-        用法：
-          ResSwitch                 启动菜单栏 App
-          ResSwitch --list          只读打印当前显示器与所有模式
-          ResSwitch --selftest      创建一块默认 1080p 虚拟屏，3 秒后释放
-          ResSwitch --selftest 4k   指定预设进行自检（1080p/2k/4k/ipad/mbp16/3440）
-          ResSwitch --selftest 4k --hold 8  自检并保持 8 秒
-          ResSwitch --selftest-switch  连续切换 iPad → 4K 后释放
-          ResSwitch --version       打印版本
+        Usage:
+          ResSwitch                    Run the menu bar app
+          ResSwitch --list             Print online displays and modes
+          ResSwitch --selftest [id]    Create a test display, then release it
+          ResSwitch --selftest [id] --hold <seconds>
+                                       Keep the test display for a while
+          ResSwitch --selftest-switch  Switch iPad → 4K, then release
+          ResSwitch --version          Print version
 
-        --list 与 --selftest 不会启动菜单栏界面。
+        Presets: 1080p, 2k, 4k, ipad, mbp16, 3440
         """
     )
     exit(0)
 }
 
 if arguments.contains("--list") {
-    print("ResSwitch 显示器信息")
+    print("ResSwitch display list")
     print("macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("")
     print(DisplayInfo.dump())
@@ -72,17 +72,18 @@ application.run()
 
 private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
     guard let preset = Preset.preset(id: presetID) else {
-        print("❌ 未知预设：\(presetID)（可选 1080p / 2k / 4k / ipad / mbp16 / 3440）")
+        print("❌ Unknown preset: \(presetID) (use 1080p, 2k, 4k, ipad, mbp16, or 3440)")
         exit(2)
     }
 
     let controller = VirtualDisplayController.shared
+    let scale = preset.usesHiDPI(for: controller.scaleMode) ? "2×" : "1×"
 
-    print("ResSwitch 自检")
+    print("ResSwitch self-test")
     print("macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
-    print("预设：\(preset.name)  \(preset.pixelLabel)  \(preset.detailLabel(for: controller.scaleMode))")
+    print("Preset: \(preset.name)  \(preset.pixelLabel)  \(scale)")
     print("")
-    print("== 创建前")
+    print("== Before")
     print(DisplayInfo.dump())
     print("")
     var finished = false
@@ -91,24 +92,24 @@ private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
     controller.apply(preset) { result in
         switch result {
         case .success:
-            print("✅ 虚拟屏已创建并切换到 \(preset.pixelLabel)")
+            print("✅ Virtual display ready at \(preset.pixelLabel)")
             print("")
-            print("== 创建后")
+            print("== Created")
             print(DisplayInfo.dump())
             print("")
             if hold > 0 {
-                print("… 保持 \(Int(hold)) 秒（方便外部观察）")
+                print("… holding for \(Int(hold))s")
             } else {
-                print("… 等待释放")
+                print("… releasing")
             }
             let release = {
                 controller.disable(allowingSoleDisplay: true) { disableResult in
                     switch disableResult {
                     case .success:
-                        print("✅ 虚拟屏已释放")
+                        print("✅ Virtual display released")
                         succeeded = true
                     case .failure(let error):
-                        print("❌ 释放失败：\(error.localizedDescription)")
+                        print("❌ Release failed: \(error.localizedDescription)")
                     }
                     finished = true
                 }
@@ -119,7 +120,7 @@ private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
                 release()
             }
         case .failure(let error):
-            print("❌ 创建失败：\(error.localizedDescription)")
+            print("❌ Create failed: \(error.localizedDescription)")
             if let suggestion = (error as? LocalizedError)?.recoverySuggestion {
                 print("   \(suggestion)")
             }
@@ -135,11 +136,11 @@ private func runSelfTest(presetID: String, hold: TimeInterval) -> Never {
     }
 
     print("")
-    print("== 结束后")
+    print("== After release")
     print(DisplayInfo.dump())
 
     if !finished {
-        print("❌ 自检超时")
+        print("❌ Self-test timed out")
         exit(1)
     }
     exit(succeeded ? 0 : 1)
@@ -151,12 +152,12 @@ private func runSwitchTest() -> Never {
     let controller = VirtualDisplayController.shared
     var allOK = true
 
-    print("ResSwitch 连续切换自检")
+    print("ResSwitch switch test")
     print("macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("")
 
     for preset in presets {
-        print("== 切换到 \(preset.name) \(preset.pixelLabel)")
+        print("== Switch to \(preset.name) \(preset.pixelLabel)")
         var finished = false
         var failure: Error?
         controller.apply(preset) { result in
@@ -170,30 +171,30 @@ private func runSwitchTest() -> Never {
         }
 
         if !finished {
-            print("❌ 切换超时")
+            print("❌ Switch timed out")
             allOK = false
             break
         }
         if let failure {
-            print("❌ 切换失败：\(failure.localizedDescription)")
+            print("❌ Switch failed: \(failure.localizedDescription)")
             allOK = false
             break
         }
 
-        print("✅ 已切换到 \(preset.pixelLabel)")
+        print("✅ Switched to \(preset.pixelLabel)")
         print(DisplayInfo.dump())
         print("")
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     }
 
-    print("== 关闭虚拟显示器")
+    print("== Close virtual display")
     var finished = false
     controller.disable(allowingSoleDisplay: true) { result in
         if case .failure(let error) = result {
-            print("❌ 关闭失败：\(error.localizedDescription)")
+            print("❌ Close failed: \(error.localizedDescription)")
             allOK = false
         } else {
-            print("✅ 已关闭")
+            print("✅ Closed")
         }
         finished = true
     }
@@ -203,12 +204,12 @@ private func runSwitchTest() -> Never {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
     if !finished {
-        print("❌ 关闭超时")
+        print("❌ Close timed out")
         allOK = false
     }
 
     print("")
-    print("== 结束后")
+    print("== After release")
     print(DisplayInfo.dump())
     exit(allOK ? 0 : 1)
 }

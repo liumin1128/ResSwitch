@@ -20,9 +20,9 @@ enum DisplayInfo {
         let pixels = mode.map { "\($0.pixelWidth)×\($0.pixelHeight)px" } ?? "?"
         let points = mode.map { "\($0.width)×\($0.height)pt" } ?? "?"
         let hz = mode.map { String(format: "%.0fHz", $0.refreshRate) } ?? "?"
-        let main = CGDisplayIsMain(id) != 0 ? " [主屏]" : ""
+        let main = CGDisplayIsMain(id) != 0 ? " [main]" : ""
         let vendor = String(format: "0x%08x", CGDisplayVendorNumber(id))
-        return "#\(id)  \(points)  \(pixels)  \(hz)  原点(\(Int(bounds.origin.x)),\(Int(bounds.origin.y)))  vendor=\(vendor)\(main)"
+        return "#\(id)  \(points)  \(pixels)  \(hz)  origin(\(Int(bounds.origin.x)),\(Int(bounds.origin.y)))  vendor=\(vendor)\(main)"
     }
 
     static func dump() -> String {
@@ -30,7 +30,7 @@ enum DisplayInfo {
         for id in onlineIDs() {
             lines.append(describe(id))
             guard let modes = CGDisplayCopyAllDisplayModes(id, nil) as? [CGDisplayMode] else {
-                lines.append("    模式：读取失败")
+                lines.append("    modes: read failed")
                 continue
             }
             let sorted = modes.sorted {
@@ -45,7 +45,7 @@ enum DisplayInfo {
                 )
             }
         }
-        if lines.isEmpty { lines.append("（没有在线显示器）") }
+        if lines.isEmpty { lines.append("(no online displays)") }
         return lines.joined(separator: "\n")
     }
 }
