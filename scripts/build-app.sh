@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 APP_NAME="ResSwitch"
-VERSION="1.0.4"
+VERSION="1.0.6"
 APP="$ROOT/dist/$APP_NAME.app"
 ZIP="$ROOT/dist/$APP_NAME-$VERSION.zip"
 

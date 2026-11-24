@@ -134,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         scaleMenuItem = NSMenuItem(title: "缩放", action: nil, keyEquivalent: "")
         let scaleSubmenu = NSMenu()
         pointPerfectItem = NSMenuItem(
-            title: ScaleMode.pointPerfect.title + "（推荐，1:1）",
+            title: ScaleMode.pointPerfect.title,
             action: #selector(selectPointPerfect),
             keyEquivalent: ""
         )
@@ -142,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         scaleSubmenu.addItem(pointPerfectItem)
 
         hiDPIItem = NSMenuItem(
-            title: ScaleMode.hiDPI.title,
+            title: ScaleMode.hiDPI.title + "（推荐）",
             action: #selector(selectHiDPI),
             keyEquivalent: ""
         )

@@ -7,6 +7,7 @@ enum VirtualDisplayError: LocalizedError {
     case createFailed
     case applyFailed
     case notOnline(String)
+    case modeNotApplied(String)
     case lastDisplay
     case terminating
 
@@ -20,6 +21,8 @@ enum VirtualDisplayError: LocalizedError {
             return "虚拟显示器初始化失败"
         case .notOnline(let message):
             return "虚拟显示器未能上线：\(message)"
+        case .modeNotApplied(let message):
+            return "虚拟显示器分辨率未生效：\(message)"
         case .lastDisplay:
             return "这是当前唯一的显示器"
         case .terminating:
@@ -35,6 +38,8 @@ enum VirtualDisplayError: LocalizedError {
             return "请完全退出 App 后重试；如果仍然失败，请重启 Mac 再试。虚拟显示器依赖 macOS 私有接口，系统更新后可能失效。"
         case .notOnline:
             return "请稍后重试。若系统显示设置无响应，请先重启 Mac，不要连续反复切换。"
+        case .modeNotApplied:
+            return "虚拟屏已经上线，但 macOS 没有接受目标分辨率。如果同时开着 UU 远程、投屏或其他虚拟屏工具，请把它们的画质/分辨率也设为相同数值再重试；不要连续反复切换。"
         case .lastDisplay:
             return "关闭后这台 Mac 将没有任何画面。请先连接物理显示器，或确认远程工具能自行创建虚拟屏；如果仍要关闭，请在确认对话框中再次确认。"
         case .terminating:
@@ -88,7 +93,11 @@ final class VirtualDisplayController {
            let saved = ScaleMode(rawValue: raw) {
             scaleMode = saved
         } else {
-            scaleMode = .pointPerfect
+            // Native-like default: 2x "looks like" sizes for the presets that
+            // support it (4K looks like 1920×1080 while still outputting
+            // 3840×2160 pixels). 1080p/2K/超宽屏 declare supportsHiDPI=false
+            // and are unaffected.
+            scaleMode = .hiDPI
         }
         CGDisplayRegisterReconfigurationCallback(displayReconfigurationCallback, nil)
     }
@@ -241,10 +250,12 @@ final class VirtualDisplayController {
         }
         provisioningDisplayID = created.id
 
-        waitForOnline(
+        settle(
             created.id,
             preset: preset,
-            deadline: DispatchTime.now() + 5.0
+            mode: mode,
+            bornAt: created.bornAt,
+            deadline: DispatchTime.now() + 12.0
         ) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -255,16 +266,18 @@ final class VirtualDisplayController {
                 completion(.failure(error))
 
             case .success:
-                self.finishSwitch(
-                    newDisplay: created.display,
-                    newID: created.id,
-                    newBirth: created.bornAt,
-                    preset: preset,
-                    mode: mode,
-                    oldDisplay: oldDisplay,
-                    oldBirth: oldBirth,
-                    completion: completion
-                )
+                self.provisioningDisplayID = nil
+                self.display = created.display
+                self.displayID = created.id
+                self.activePreset = preset
+                self.activeScaleMode = mode
+                self.bornAt = created.bornAt
+                self.isBusy = false
+
+                if let oldDisplay {
+                    self.retire(oldDisplay, bornAt: oldBirth ?? Date.distantPast)
+                }
+                completion(.success(()))
             }
         }
     }
@@ -448,13 +461,13 @@ final class VirtualDisplayController {
 
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = hiDPI
-        settings.modes = [
+        settings.modes = preset.modeSizes(for: mode).map {
             CGVirtualDisplayMode(
-                width: UInt(logicalWidth),
-                height: UInt(logicalHeight),
+                width: UInt($0.width),
+                height: UInt($0.height),
                 refreshRate: 60
             )
-        ]
+        }
 
         guard display.apply(settings) else {
             // The object may already be registered even though apply failed.
@@ -467,94 +480,146 @@ final class VirtualDisplayController {
         NSLog(
             "ResSwitch: created virtual display #\(display.displayID) " +
             "\(preset.pixelLabel) logical=\(logicalWidth)×\(logicalHeight) " +
-            "hiDPI=\(hiDPI) mode=\(mode.rawValue)"
+            "modes=\(settings.modes.count) hiDPI=\(hiDPI) mode=\(mode.rawValue)"
         )
         return (display, display.displayID, birth)
     }
 
-    private func finishSwitch(
-        newDisplay: CGVirtualDisplay,
-        newID: CGDirectDisplayID,
-        newBirth: Date,
+    /// Wait until the new display is online and has stayed online for a
+    /// short settle window, then make sure it is really running the requested
+    /// mode, and only then let the caller commit the switch (which retires
+    /// the previous display).
+    ///
+    /// Two macOS 26/27 quirks are handled here:
+    /// - The system applies a "default configuration" right after creation and
+    ///   switches a 4K display to 1920×1080, no matter which mode was applied.
+    /// - A process that has already queried displays before creating a virtual
+    ///   display cannot read that display's mode list afterwards. So the mode
+    ///   is applied by a short-lived copy of this executable, which starts with
+    ///   a clean display connection.
+    private func settle(
+        _ id: CGDirectDisplayID,
         preset: Preset,
         mode: ScaleMode,
-        oldDisplay: CGVirtualDisplay?,
-        oldBirth: Date?,
+        bornAt: Date,
+        deadline: DispatchTime,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        let wait = remainingLifetime(for: newBirth)
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-            guard let self else { return }
+        let readyAt = bornAt.addingTimeInterval(minimumLifetime)
+        var onlineSince: Date?
+        var modeAttempts = 0
 
-            guard self.isDisplayOnline(newID) else {
-                self.provisioningDisplayID = nil
-                self.retire(newDisplay, bornAt: newBirth)
-                self.isBusy = false
-                completion(
-                    .failure(
-                        VirtualDisplayError.notOnline(
-                            "新虚拟屏 #\(newID) 在稳定检查时掉线（\(self.currentModeLabel(newID))）"
+        func fail(_ error: VirtualDisplayError) {
+            NSLog("ResSwitch: display #\(id) failed to settle: \(error.localizedDescription)")
+            completion(.failure(error))
+        }
+
+        func enforceMode() {
+            modeAttempts += 1
+            applyModeExternally(id, preset: preset, mode: mode) { applied in
+                if applied {
+                    completion(.success(()))
+                    return
+                }
+                if modeAttempts < 3, DispatchTime.now() < deadline {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: enforceMode)
+                } else {
+                    fail(
+                        .modeNotApplied(
+                            "\(preset.pixelLabel) 没有生效（当前 \(self.currentModeLabel(id))）"
                         )
+                    )
+                }
+            }
+        }
+
+        func waitForOnline() {
+            let now = Date()
+            if isDisplayOnline(id) {
+                if onlineSince == nil { onlineSince = now }
+                if now >= readyAt,
+                   let onlineSince,
+                   now.timeIntervalSince(onlineSince) >= 0.6 {
+                    enforceMode()
+                    return
+                }
+            } else {
+                onlineSince = nil
+            }
+
+            if DispatchTime.now() >= deadline {
+                fail(
+                    .notOnline(
+                        "\(preset.pixelLabel) 一直没有上线（当前 \(currentModeLabel(id))）"
                     )
                 )
                 return
             }
 
-            self.provisioningDisplayID = nil
-            self.display = newDisplay
-            self.displayID = newID
-            self.activePreset = preset
-            self.activeScaleMode = mode
-            self.bornAt = newBirth
-            self.isBusy = false
-
-            if let oldDisplay {
-                self.retire(oldDisplay, bornAt: oldBirth ?? Date.distantPast)
-            }
-            completion(.success(()))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { waitForOnline() }
         }
+
+        waitForOnline()
     }
 
-    private func waitForOnline(
+    /// Apply the preset's mode from a freshly started copy of this executable.
+    /// See the comment on `settle` for why this cannot be done in-process.
+    private func applyModeExternally(
         _ id: CGDirectDisplayID,
         preset: Preset,
-        deadline: DispatchTime,
-        completion: @escaping (Result<Void, Error>) -> Void
+        mode: ScaleMode,
+        completion: @escaping (Bool) -> Void
     ) {
-        if isDisplayOnline(id) {
-            completion(.success(()))
+        guard let executable = Bundle.main.executableURL else {
+            completion(false)
             return
         }
 
-        if DispatchTime.now() >= deadline {
-            completion(
-                .failure(
-                    VirtualDisplayError.notOnline(
-                        "5 秒内没有等到 \(preset.pixelLabel)；" +
-                        "当前 \(currentModeLabel(id))；online=\(CGDisplayIsOnline(id))"
-                    )
-                )
-            )
+        let helper = Process()
+        helper.executableURL = executable
+        helper.arguments = [
+            "--set-mode",
+            "\(id)",
+            "\(preset.logicalWidth(for: mode))",
+            "\(preset.logicalHeight(for: mode))",
+            "\(preset.width)",
+            "\(preset.height)"
+        ]
+        helper.standardOutput = FileHandle.nullDevice
+        helper.standardError = FileHandle.nullDevice
+        helper.terminationHandler = { finished in
+            let applied = finished.terminationStatus == 0
+            DispatchQueue.main.async { completion(applied) }
+        }
+
+        do {
+            try helper.run()
+        } catch {
+            NSLog("ResSwitch: could not launch mode helper: \(error.localizedDescription)")
+            completion(false)
             return
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.waitForOnline(id, preset: preset, deadline: deadline, completion: completion)
+        // A wedged helper must not keep the switch pending forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            if helper.isRunning { helper.terminate() }
         }
     }
 
     /// A virtual display can be online and usable while
     /// CGDisplayCopyDisplayMode still returns nil for it (observed on macOS
-    /// 27 with a display created by the same non-GUI test process). The mode
-    /// was already selected by applySettings, so being online is the reliable
-    /// readiness signal here.
+    /// 27 with a display created by the same non-GUI test process), so online
+    /// is checked through both APIs.
     private func isDisplayOnline(_ id: CGDirectDisplayID) -> Bool {
         CGDisplayIsOnline(id) != 0 || DisplayInfo.onlineIDs().contains(id)
     }
 
     private func currentModeLabel(_ id: CGDirectDisplayID) -> String {
-        guard let mode = DisplayInfo.currentMode(id) else { return "未知" }
-        return "\(mode.width)×\(mode.height)pt / \(mode.pixelWidth)×\(mode.pixelHeight)px"
+        if let mode = DisplayInfo.currentMode(id) {
+            return "\(mode.width)×\(mode.height)pt / \(mode.pixelWidth)×\(mode.pixelHeight)px"
+        }
+        return "未知（online=\(CGDisplayIsOnline(id))，" +
+            "\(CGDisplayPixelsWide(id))×\(CGDisplayPixelsHigh(id))px）"
     }
 
     // MARK: - Lifetime helpers

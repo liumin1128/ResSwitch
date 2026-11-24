@@ -4,7 +4,7 @@ import Foundation
 private let arguments = CommandLine.arguments
 
 if arguments.contains("--version") {
-    print("ResSwitch 1.0.4")
+    print("ResSwitch 1.0.6")
     exit(0)
 }
 
@@ -34,6 +34,10 @@ if arguments.contains("--list") {
     print("")
     print(DisplayInfo.dump())
     exit(0)
+}
+
+if let index = arguments.firstIndex(of: "--set-mode") {
+    runSetMode(arguments, at: index)
 }
 
 if arguments.contains("--selftest-switch") {
@@ -207,4 +211,69 @@ private func runSwitchTest() -> Never {
     print("== 结束后")
     print(DisplayInfo.dump())
     exit(allOK ? 0 : 1)
+}
+
+// MARK: - Display mode helper
+
+/// `ResSwitch --set-mode <displayID> <logicalW> <logicalH> <pixelW> <pixelH>`
+///
+/// Started by `VirtualDisplayController` after a virtual display comes online.
+/// A fresh process is used because a process that has already queried displays
+/// before creating a virtual display cannot read that display's mode list
+/// (macOS 26/27 quirk), while a new process can.
+///
+/// Exit codes: 0 applied, 2 mode not found, 3 mode did not stick,
+/// 4 display offline, 5 configuration rejected.
+private func runSetMode(_ arguments: [String], at index: Int) -> Never {
+    guard arguments.count > index + 5,
+          let displayID = CGDirectDisplayID(arguments[index + 1]),
+          let logicalWidth = Int(arguments[index + 2]),
+          let logicalHeight = Int(arguments[index + 3]),
+          let pixelWidth = Int(arguments[index + 4]),
+          let pixelHeight = Int(arguments[index + 5]) else {
+        exit(2)
+    }
+
+    func matches(_ mode: CGDisplayMode) -> Bool {
+        mode.width == logicalWidth &&
+            mode.height == logicalHeight &&
+            mode.pixelWidth == pixelWidth &&
+            mode.pixelHeight == pixelHeight
+    }
+
+    // Read the mode list before any other display query: that is the call the
+    // creating process cannot make reliably. The duplicate-mode option is
+    // required to see the 2x variants of the "looks like" sizes.
+    let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+    guard let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] else {
+        exit(2)
+    }
+    guard CGDisplayIsOnline(displayID) != 0 else {
+        exit(4)
+    }
+    if let current = CGDisplayCopyDisplayMode(displayID), matches(current) {
+        exit(0)
+    }
+    guard let target = modes.first(where: matches) else {
+        exit(2)
+    }
+
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success,
+          let config else {
+        exit(5)
+    }
+    guard CGConfigureDisplayWithDisplayMode(config, displayID, target, nil) == .success else {
+        CGCancelDisplayConfiguration(config)
+        exit(5)
+    }
+    guard CGCompleteDisplayConfiguration(config, .forSession) == .success else {
+        exit(5)
+    }
+
+    Thread.sleep(forTimeInterval: 0.3)
+    if let current = CGDisplayCopyDisplayMode(displayID), matches(current) {
+        exit(0)
+    }
+    exit(3)
 }
