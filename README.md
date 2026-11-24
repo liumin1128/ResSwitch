@@ -4,7 +4,7 @@
   <img src="Resources/AppIcon-1024.png" width="112" alt="ResSwitch 图标">
 </p>
 
-常驻 macOS 菜单栏的**虚拟显示器分辨率切换工具**。默认 1920×1080，也可以一键切到 2K、4K、iPad Pro 2018、MacBook Pro 16″ 或 3440×1440。
+常驻 macOS 菜单栏的**虚拟显示器分辨率切换工具**。默认 1920×1080，也可以一键切到 2K、4K、5K、iPad Pro 2018、MacBook Pro 16″ 或 3440×1440。
 
 定位很简单：不接管物理显示器、不改系统设置、不联网；只在需要时创建一块虚拟屏，切换分辨率，然后随时关闭。
 
@@ -20,7 +20,8 @@
 
 ## 1.0.7 更新：英文界面，菜单精简
 
-- 菜单栏界面全部改为英文，并去掉说明性文案：状态行只显示 `No virtual display` 或 `On · 3840×2160`，预设只显示名称。
+- 菜单栏界面全部改为英文，并去掉说明性文案：状态行只显示 `No virtual display` 或 `On · 3840×2160`，预设显示 `名称 · 分辨率`。
+- 新增 **5K（5120×2880）** 预设；`Scale › 2×` 时逻辑尺寸为 2560×1440。
 - 移除「打开显示器设置」「复制显示器信息」和 `About` 三个非核心菜单项；版本可用 `--version` 查看。
 - 唯一屏幕的关闭/退出确认框缩短为一句后果说明。
 - `--help`、`--list`、`--selftest` 输出同步改为英文。
@@ -75,7 +76,7 @@
 ## 功能
 
 - 菜单栏常驻，无 Dock 图标
-- 六个内置预设，点击即切换
+- 七个内置预设，点击即切换
 - 默认 `Scale › 2×`（原生 2×）：4K 帧缓冲 3840×2160、桌面 looks like 1920×1080，UI 大小和原生 4K 一致；也保留点对点 1×
 - 4K 可以在系统显示器设置里调整观感大小（多档 2×），像原生 4K 屏
 - 远程客户端拿到多少像素，虚拟屏帧缓冲就是多少像素（2× 时逻辑尺寸减半，像素仍 1:1）
@@ -87,11 +88,12 @@
 
 ## 预设
 
-默认 `Scale › 2×`（4K / iPad / MacBook Pro 16″）：
+默认 `Scale › 2×`（4K / 5K / iPad / MacBook Pro 16″）：
 
 | 菜单项 | 物理像素 | 逻辑尺寸 | 缩放 |
 | --- | ---: | ---: | --- |
 | 4K | 3840×2160 | 1920×1080 | 2× HiDPI，可调大小 |
+| 5K | 5120×2880 | 2560×1440 | 2× HiDPI |
 | iPad Pro 2018 | 2732×2048 | 1366×1024 | 2× HiDPI |
 | MacBook Pro 16″ | 3456×2234 | 1728×1117 | 2× HiDPI |
 | 1080p | 1920×1080 | 1920×1080 | 1× |
@@ -109,6 +111,7 @@
 | 1080p | 1920×1080 | 1920×1080 | 1× |
 | 2K | 2560×1440 | 2560×1440 | 1× |
 | 4K | 3840×2160 | 3840×2160 | 1× |
+| 5K | 5120×2880 | 5120×2880 | 1× |
 | iPad Pro 2018 | 2732×2048 | 2732×2048 | 1× |
 | MacBook Pro 16″ | 3456×2234 | 3456×2234 | 1× |
 | Ultrawide | 3440×1440 | 3440×1440 | 1× |
@@ -153,12 +156,13 @@ xattr -dr com.apple.quarantine "/Applications/ResSwitch.app"
 ```text
 On · 3840×2160
 ────────────────────────
-    1080p
-    2K
-  ✓ 4K
-    iPad Pro 2018
-    MacBook Pro 16″
-    Ultrawide
+    1080p · 1920×1080
+    2K · 2560×1440
+  ✓ 4K · 3840×2160
+    5K · 5120×2880
+    iPad Pro 2018 · 2732×2048
+    MacBook Pro 16″ · 3456×2234
+    Ultrawide · 3440×1440
 ────────────────────────
 Scale
     1×
@@ -180,6 +184,7 @@ ResSwitch 创建的是标准的 macOS 虚拟显示器，远程工具（如 UU �
 - `ResSwitch · 1080p`
 - `ResSwitch · 2K`
 - `ResSwitch · 4K`
+- `ResSwitch · 5K`
 - `ResSwitch · iPad Pro 2018`
 - `ResSwitch · MacBook Pro 16″`
 - `ResSwitch · Ultrawide`
@@ -295,6 +300,7 @@ swift build -c release --product ResSwitch
 ./dist/ResSwitch.app/Contents/MacOS/ResSwitch --selftest 1080p
 ./dist/ResSwitch.app/Contents/MacOS/ResSwitch --selftest ipad
 ./dist/ResSwitch.app/Contents/MacOS/ResSwitch --selftest mbp16
+./dist/ResSwitch.app/Contents/MacOS/ResSwitch --selftest 5k
 ```
 
 连续切换 iPad → 4K 再释放（会改变显示拓扑，谨慎使用）：

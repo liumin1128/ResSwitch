@@ -65,13 +65,15 @@ struct Preset: Identifiable, Hashable {
 
     var pixelLabel: String { "\(width)×\(height)" }
 
+    var menuTitle: String { "\(name) · \(pixelLabel)" }
+
     var displayName: String { "ResSwitch · \(name)" }
 
     /// A virtual display must not be reported as a comically small monitor.
     /// Point-perfect mode declares a large panel (110 PPI) so macOS does not
     /// mistake a high-resolution mode for a Retina display and silently pick
     /// a half-sized "looks like" mode. HiDPI mode declares the preset's real
-    /// density (27" 4K, 12.9" iPad) so macOS picks the intended 2x mode.
+    /// density (27" 4K/5K, 12.9" iPad) so macOS picks the intended 2x mode.
     /// A minimum area of 200 cm² avoids a macOS 26 online-detection quirk.
     func sizeInMillimeters(for mode: ScaleMode) -> CGSize {
         let ppi = usesHiDPI(for: mode) ? hiDPIPixelsPerInch : 110.0
@@ -123,6 +125,8 @@ struct Preset: Identifiable, Hashable {
                 CGSize(width: 1280, height: 720)
             ]
         ),
+        // 27" 5120×2880; 2x mode looks like 2560×1440
+        Preset(id: "5k", name: "5K", width: 5120, height: 2880, supportsHiDPI: true, hiDPIPixelsPerInch: 218),
         // iPad Pro 12.9" 2018; 2x mode looks like 1366×1024
         Preset(id: "ipad", name: "iPad Pro 2018", width: 2732, height: 2048, supportsHiDPI: true, hiDPIPixelsPerInch: 264),
         // MacBook Pro 16" 2021 (M1 Pro/Max); 2x mode looks like 1728×1117
